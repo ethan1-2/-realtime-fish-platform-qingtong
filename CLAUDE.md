@@ -1,173 +1,254 @@
-# 捕鱼游戏实时数据平台
+# SAAS 游戏支付抽水平台：Kafka + Flink + Doris
 
 ## 项目概述
 
-基于 Kafka + Flink + Doris 架构，构建日增 20 亿条的捕鱼游戏实时数据平台。
-通过 3 个递进式子项目，系统掌握大规模实时数据处理的核心能力。
+基于 Kafka + Flink + Doris 架构，构建 SAAS 游戏支付抽水平台的实时数仓。
+平台服务多个游戏公司（多租户），提供充值/代收/支付回调/补单/退款等能力，通过抽成（抽水）盈利。
+数据规模：多表日增十亿级以上，存在乱序、迟到、重复投递、热点租户/热点游戏。
+
+通过 3 个递进式场景，一次练透实时数仓最核心的难点：
+幂等去重、事件时间/迟到回补、规则版本化、多租户隔离、倾斜治理、可观测与对账可解释。
 
 ## 技术栈
 
 | 组件 | 版本 | 用途 |
 |------|------|------|
-| Kafka | 3.x | 消息队列，事件总线 |
+| Kafka | 3.x | 事件总线，至少一次投递 |
 | Flink | 1.18+ | 实时计算引擎 |
 | Apache Doris | 2.1+ | 实时 OLAP 数据仓库 |
 | Docker Compose | - | 本地开发环境 |
 | Java 11 | - | Flink Job 开发语言 |
 | Maven | - | 构建工具 |
 
-## 业务背景
+## 统一事件字段规范
 
-捕鱼游戏核心事件流：
+所有事件必须包含以下公共字段：
 
-| Kafka Topic | 说明 | 日增量级 |
-|-------------|------|----------|
-| tp_battle_fire | 开炮事件 | 20亿+（量最大） |
-| tp_fish_kill | 击杀鱼事件 | 5亿 |
-| tp_coin_change | 金币变动（充值/消耗/奖励） | 10亿 |
-| tp_pay_success | 充值成功 | 500万 |
-| tp_room_enter_exit | 进出房间 | 2亿 |
-| tp_config_change | 配置变更（鱼种/掉落/活动） | 低频 |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| tenant_id | VARCHAR(32) | 租户ID（游戏公司） |
+| event_time | DATETIME(3) | 事件发生时间（业务时间） |
+| trace_id | VARCHAR(64) | 全链路追踪ID |
+| idempotency_key | VARCHAR(64) | 幂等键（去重主键） |
+| rule_version | INT | 规则版本号（抽成/风控规则） |
+
+## Kafka Topic 规划
+
+| Topic | 说明 | 分区键 | 日增量级 |
+|-------|------|--------|----------|
+| tp_pay_success | 支付成功 | tenant_id + order_id | 10亿+ |
+| tp_refund_success | 退款成功 | tenant_id + refund_id | 5000万 |
+| tp_chargeback | 拒付/争议 | tenant_id + chargeback_id | 100万 |
+| tp_settlement_adjust | 人工调账/补偿 | tenant_id + adjust_id | 10万 |
+| tp_take_rate_rule_change | 抽成规则变更 | tenant_id | 低频 |
+| tp_user_login | 用户登录/注册 | user_id | 5亿 |
+| tp_risk_hit | 风险命中事件（Flink输出） | tenant_id + user_id | 视规则命中量 |
+| tp_tenant_throttle | 租户限流控制指令（Flink输出） | tenant_id | 低频 |
 
 ---
 
-## 项目1：实时金币对账系统（基础）
+## 场景 1：多租户实时营收与结算（今天做这个）
 
-### 目标
-跑通 Kafka→Flink→Doris 全链路，解决端到端一致性问题。
+### 业务故事
+
+平台接入 N 个租户（游戏公司），每个租户有多个游戏/区服/渠道。平台代收支付后按规则抽成：
+- 抽成按租户等级、支付方式、渠道、活动期、阶梯费率等组合计算
+- 支付成功后可能发生退款/拒付/补单，回调可能迟到数小时甚至更久
+- 运营与财务要求：分钟级看大盘；结算时能逐笔对账，解释"为什么这个租户今天应结算金额是 X"
 
 ### 核心学习点
-- [ ] Kafka 生产消费、分区策略
-- [ ] Flink Checkpoint、State、窗口聚合
-- [ ] Doris Unique Key + Sequence Column 幂等写入
-- [ ] Stream Load 调优
-- [ ] 对账表设计 + 差异定位 SQL
-- [ ] 侧输出流处理脏数据
+
+- [ ] Kafka 至少一次 + Flink 重启重放 → Doris 幂等去重
+- [ ] 迟到退款/拒付的 watermark + allowed lateness 策略
+- [ ] 抽成规则版本化（广播流 vs 时态维表 join）
+- [ ] 多租户倾斜治理（头部租户数据量远超其他）
+- [ ] 对账表设计：双源校验 + 差异原因可解释
 
 ### 要做的事
 
 #### 1.1 基础设施搭建
-- [ ] docker-compose 编排 Kafka(3节点) + Flink(JobManager+TaskManager) + Doris(FE+BE)
-- [ ] 数据生成器：模拟 coin_change 事件（充值/投注/奖励/消耗），支持可调 TPS
+- [ ] docker-compose 编排 Kafka(3节点) + Flink(JM+TM) + Doris(FE+BE)
+- [ ] 数据生成器：模拟多租户支付事件流，支持可调 TPS
+  - 支持生成：pay_success、refund_success、chargeback、settlement_adjust
+  - 支持模拟：迟到退款（event_time 比 kafka produce time 早数小时）
+  - 支持模拟：重复投递（同一 idempotency_key 多次发送）
+  - 支持模拟：热点租户（tenant_001 数据量是普通租户的 500 倍）
 
 #### 1.2 Doris 表设计
-- [ ] `player_coin_balance` — Unique Key，玩家金币余额表，Sequence Column 保证幂等
-- [ ] `coin_change_detail` — Unique Key(event_date, change_id)，金币变动明细表
-- [ ] `reconciliation_coin` — Unique Key，金币对账表（源头统计 vs 落地统计）
+
+##### 明细审计层（DWD）
+
+**`dwd_payment_detail`** — 支付结算明细表（Unique Key，核心对账表）
+```
+主键：(event_date, idempotency_key)
+必要字段：
+  tenant_id, game_id, channel_id, order_id, payment_id
+  event_time, event_type (pay/refund/chargeback/adjust)
+  amount, currency
+  pay_method, pay_channel
+  take_rate_rule_version    -- 抽成规则版本号
+  take_rate_pct             -- 当时的抽成比例快照
+  take_rate_amount          -- 平台抽成金额
+  settlement_amount         -- 租户应结算金额 (amount - take_rate_amount)
+  trace_id
+```
+- Unique Key 保证幂等：同一 idempotency_key 写多次只保留一条
+- Sequence Column = event_time_ms，迟到的退款/拒付能覆盖更新
+
+**`dwd_dirty_event`** — 脏数据归档表（Duplicate Key）
+```
+记录所有校验失败的事件，含失败原因字段 dirty_reason
+```
+
+##### 聚合指标层（DWS）
+
+**`dws_settlement_minute`** — 分钟级结算聚合（Unique Key）
+```
+主键：(stat_date, stat_minute, tenant_id, game_id, channel_id, pay_method)
+指标字段：
+  pay_count, pay_amount (GMV)
+  refund_count, refund_amount
+  chargeback_count, chargeback_amount
+  net_amount (净入金 = pay - refund - chargeback + adjust)
+  take_rate_total (平台抽成总额)
+  settlement_total (租户应结算总额)
+```
+- Unique Key：同一分钟+维度组合覆盖写入 → 迟到数据回补时更新而非翻倍
+
+**`dws_reconciliation`** — 对账表（Unique Key）
+```
+主键：(recon_date, recon_hour, tenant_id)
+字段：
+  src_pay_count, src_pay_amount       -- 源头统计（Flink 从 Kafka 消费时聚合）
+  dst_pay_count, dst_pay_amount       -- 落地统计（Doris 明细表回查聚合）
+  diff_count, diff_amount             -- 差异
+  diff_reason                         -- 差异原因分类
+  recon_status (0-未对账/1-一致/2-有差异/3-已修正)
+```
 
 #### 1.3 Flink Job 开发
-- [ ] Job-1: CoinChangeETL — 消费 tp_coin_change，清洗 + 写入 coin_change_detail
-  - JSON 解析、数据校验、脏数据侧输出
-  - Doris Flink Connector Stream Load 写入
-  - 幂等 ID 生成策略：业务字段哈希
-- [ ] Job-2: CoinBalanceUpdate — 消费 tp_coin_change，更新 player_coin_balance
-  - KeyedState 维护余额
-  - Sequence Column 版本号 = event_time_ms
-- [ ] Job-3: CoinReconciliation — 实时对账
-  - 按 player_id + hour 窗口聚合，输出源头统计到对账表
-  - 定时 Doris SQL 任务回填落地统计，计算差异
+
+**Job-1: PaymentDetailETL** — 支付明细清洗入库
+- 消费 tp_pay_success, tp_refund_success, tp_chargeback, tp_settlement_adjust
+- 多源合并（UNION）
+- JSON 解析 → 字段校验（脏数据走侧输出流 → dwd_dirty_event）
+- 幂等 ID：使用业务 idempotency_key（由上游支付系统生成）
+- 广播流 Join：关联 tp_take_rate_rule_change 获取当前抽成规则
+  - BroadcastProcessFunction
+  - 规则按 tenant_id + effective_time 维护时间线
+  - 事件按 event_time 匹配对应版本规则（floorEntry）
+  - 输出：带规则快照的结算明细 → dwd_payment_detail
+- Doris Sink：Stream Load，Unique Key 幂等写入
+
+**Job-2: SettlementAggregation** — 分钟级结算聚合
+- 消费 dwd_payment_detail（或直接从 Kafka 消费后聚合）
+- Watermark：forBoundedOutOfOrderness(5 seconds)
+- 窗口：TumblingEventTimeWindows(1 minute)
+- Allowed Lateness：6 hours（退款/拒付可能迟到数小时）
+  - 迟到数据触发窗口更新 → 覆盖写入 dws_settlement_minute（Unique Key 不翻倍）
+- 多租户倾斜治理：两阶段聚合
+  - 第一阶段：keyBy(tenant_id + salt) → 预聚合
+  - 第二阶段：keyBy(tenant_id, game_id, channel_id, pay_method) → 最终聚合
+- 输出 → dws_settlement_minute
+
+**Job-3: SettlementReconciliation** — 实时对账
+- 按 tenant_id + hour 窗口聚合 Kafka 源头统计
+- 写入 dws_reconciliation 的 src 列
+- 定时 Doris SQL 任务回填 dst 列（从 dwd_payment_detail 聚合）
+- 计算差异，标记异常租户
 
 #### 1.4 验证与调优
-- [ ] 模拟 Flink 重启，验证 Checkpoint 恢复 + Doris 幂等写入无重复
-- [ ] 模拟脏数据（缺字段、金额为负），验证侧输出流捕获
-- [ ] 对账 SQL：查出差异玩家及原因分类
-- [ ] Stream Load 参数调优（buffer size、interval、并行度）
+
+- [ ] **幂等验证**：模拟 Flink 重启（kill TaskManager），验证 Checkpoint 恢复后 Doris 无重复数据
+- [ ] **迟到回补验证**：发送 event_time 为 3 小时前的退款事件，验证：
+  - dwd_payment_detail 中该订单状态被更新
+  - dws_settlement_minute 中对应分钟的指标被修正（净入金减少）
+  - 指标不翻倍（Unique Key 覆盖写入）
+- [ ] **规则版本验证**：变更某租户抽成规则，验证变更前后的订单使用了正确版本的规则
+- [ ] **对账验证**：挑 100 笔订单，在 Doris 查到完整链路（原始金额→抽成规则版本→抽成金额→应结算金额→退款修正）
+- [ ] **脏数据验证**：发送缺字段/金额为负的事件，验证进入 dwd_dirty_event
+- [ ] **Stream Load 调优**：buffer size、interval、并行度调参
 
 ---
 
-## 项目2：实时房间大盘（进阶）
+## 场景 2：平台级资金风控与异常告警（第二个做）
 
-### 目标
-解决数据倾斜和维表 Join 两大核心难题。
+### 业务故事
+
+平台最大风险来自资金侧异常：盗刷、羊毛党、异常退款率、某渠道洗量、某租户短时间内交易激增。
+平台提供统一实时风控能力，不同租户可有不同阈值、黑白名单与处置策略。
 
 ### 核心学习点
-- [ ] 两阶段聚合（Key 加盐）解决热点房间倾斜
-- [ ] BroadcastState 广播流维表关联
-- [ ] 配置版本管理 + 时间线匹配（时序维表）
-- [ ] Doris Aggregate Key / Bitmap 去重
-- [ ] 多流 Join（开炮流 + 击杀流 + 配置流）
+
+- [ ] 多流关联：支付流 + 登录/设备流的 Interval Join
+- [ ] 状态规模控制：特征窗口 State TTL 设计
+- [ ] 倾斜与攻击流量：黑产流量热点隔离
+- [ ] 风控规则可回溯：每条命中记录 rule_version + evidence
+- [ ] 可观测性：区分"规则命中上升"与"数据延迟/重复导致假峰值"
 
 ### 要做的事
 
 #### 2.1 数据生成器扩展
-- [ ] 模拟 tp_battle_fire 事件（含热点房间：room_888 数据量是普通房间的 500 倍）
-- [ ] 模拟 tp_fish_kill 事件
-- [ ] 模拟 tp_config_change 事件（鱼种配置变更，含 effective_time 字段）
+- [ ] 模拟 tp_user_login 事件（含 device_id, ip, geo）
+- [ ] 模拟攻击流量：同 IP 多账号、同设备跨租户、短时间密集支付
 
 #### 2.2 Doris 表设计
-- [ ] `room_stats_1min` — Unique Key(stat_date, stat_minute, room_id)，房间分钟级聚合
-  - fire_count, kill_count, total_bet, total_reward, player_bitmap(Bitmap UV)
-- [ ] `fish_kill_with_config` — Unique Key(event_date, kill_id)，带配置快照的击杀明细
-- [ ] `dim_fish_config_history` — Unique Key，鱼种配置变更历史表
+- [ ] `dwd_risk_hit_detail` — 风险命中明细（Unique Key）
+  - risk_type, rule_version, evidence(JSON), hit_time, dispose_action
+- [ ] `dws_risk_distribution` — 风险分布聚合（Unique Key，按小时/天/租户/渠道）
 
 #### 2.3 Flink Job 开发
-- [ ] Job-4: RoomStatsAgg — 两阶段聚合
-  - 第一阶段：keyBy(roomId + salt) → 预聚合（64 路打散）
-  - 第二阶段：keyBy(roomId) → 最终聚合（合并 64 份预聚合结果）
-  - UV 使用 RoaringBitmap 合并
-  - 写入 room_stats_1min
-- [ ] Job-5: FishKillEnrich — 广播流维表 Join
-  - 主流：tp_fish_kill
-  - 广播流：tp_config_change（鱼种配置）
-  - BroadcastProcessFunction 关联配置
-  - 输出带配置快照的明细到 fish_kill_with_config
-- [ ] (可选) Job-6: TemporalConfigJoin — 时序维表 Join
-  - 活动规则按 effective_time 匹配事件时间
-  - floorEntry 实现时间线查找
+- [ ] Job-4: RiskDetection — 实时风控
+  - 3 条规则（频次类 + 金额类 + 关联类）
+  - 每条规则输出 evidence 字段
+  - 支付流 + 登录流 Interval Join
+  - 黑白名单广播流
+  - 输出 risk_hit 事件到 tp_risk_hit
+- [ ] Job-5: RiskAggregation — 风险聚合入库
+  - 消费 tp_risk_hit → dwd_risk_hit_detail + dws_risk_distribution
 
 #### 2.4 验证
-- [ ] 对比加盐前后：倾斜 Task 的处理延迟变化
-- [ ] 对比加盐前后：统计结果一致性（明细直算 vs Flink 聚合）
-- [ ] 配置变更后，验证新旧事件使用了正确版本的配置
+- [ ] 构造重复事件 + 迟到事件，风控命中数不因重放翻倍
+- [ ] 按单用户/单设备回放最近 24 小时风险证据链
+- [ ] State TTL 验证：过期状态被清理，内存不爆
 
 ---
 
-## 项目3：数据补算 + 全链路可观测性（高阶）
+## 场景 3：SAAS 平台计费与配额治理（第三个做）
 
-### 目标
-建立生产级故障恢复能力和全链路监控体系。
+### 业务故事
+
+除了抽成，平台对租户收 SAAS 服务费：按 API 调用量、成功支付笔数、风控调用次数等计费。
+同时必须做配额与隔离：某租户流量洪峰不能拖垮整个平台，超配额要限流或降级。
 
 ### 核心学习点
-- [ ] 独立补算 Job 设计（隔离 + 时间范围过滤）
-- [ ] 补算校验三步法（条数 + 连续性 + 口径）
-- [ ] Prometheus + Grafana 监控大盘
-- [ ] Kafka Lag / Flink 反压 / Doris 写入延动分析
-- [ ] 分级降级策略
+
+- [ ] 计费口径与幂等：重试/补单如何不重复计费
+- [ ] Doris 分区冷热分层：近 7 天高频查询 vs 历史低频
+- [ ] 实时配额检测 + 限流控制指令输出
+- [ ] 端到端对账：证明账单不重不漏
 
 ### 要做的事
 
-#### 3.1 补算流程
-- [ ] BackfillJob — 独立 Flink 补算作业
-  - 独立 Consumer Group
-  - 按 timestamp 指定消费起止范围
-  - 写入临时表 `xxx_backfill`，不直接写主表
-  - 复用实时 Job 的处理逻辑（同一套 Function）
-- [ ] 补算合并脚本
-  - 校验通过后 INSERT INTO SELECT 合并到主表
-  - Unique Key 保证幂等，不会翻倍
-- [ ] 补算校验 SQL
-  - Step 1：条数校验（Kafka offset 差值 vs Doris 条数）
-  - Step 2：时间连续性校验（每分钟有数据，无空洞）
-  - Step 3：口径一致性校验（补算时段 vs 相邻正常时段指标分布对比）
+#### 3.1 Doris 表设计
+- [ ] `dws_tenant_daily_bill` — 租户日账单聚合（Unique Key）
+  - 各计费项累计（支付笔数、API 调用量、风控调用量等）
+  - 支持出月账单 + 明细追溯
+- [ ] `dwd_billing_detail` — 计费明细（Unique Key，用于争议处理）
 
-#### 3.2 可观测性
-- [ ] Prometheus + Grafana docker 容器
-- [ ] Kafka 指标采集：Consumer Lag、分区消息量、生产 TPS
-- [ ] Flink 指标采集：Backpressure、Checkpoint 耗时/失败数、各算子 TPS
-- [ ] Doris 指标采集：Stream Load 成功率/延迟、查询 P95、Compaction 积压
-- [ ] 自定义指标：端到端延迟（event_time → 可查询 的时间差）
-- [ ] 告警规则：Lag > 50万、Checkpoint > 3min、Load 失败率 > 1%、端到端延迟 > 2min
+#### 3.2 Flink Job 开发
+- [ ] Job-6: TenantBilling — 租户计费
+  - 实时累计各计费项
+  - 幂等去重：同一请求不重复计费
+- [ ] Job-7: QuotaEnforcement — 配额检测
+  - 实时累计租户用量
+  - 超限 → 输出 tp_tenant_throttle 控制事件
+  - 分钟级发现 + 触发
 
-#### 3.3 降级策略实现
-- [ ] 通过广播流下发降级指令
-- [ ] Level 1：丢弃低价值维度（city, device 等）
-- [ ] Level 2：只写聚合表，暂停明细表
-- [ ] Level 3：写本地文件兜底，事后批量导入
-
-#### 3.4 故障演练
-- [ ] 模拟 Flink Job 停止 3 小时 → 走补算流程 → 验证数据完整
-- [ ] 模拟 Doris BE 下线 → 观察写入降级 → BE 恢复后验证数据
-- [ ] 模拟 Kafka 分区不均 → 观察 Flink 反压 → 验证告警触发
+#### 3.3 验证
+- [ ] 制造租户突发流量，分钟级触发限流控制事件
+- [ ] 账单累计不丢不重（抽样对账）
+- [ ] Doris 冷热分层验证
 
 ---
 
@@ -175,42 +256,60 @@
 
 ```
 realtime-fish-platform/
-├── CLAUDE.md                          # 本文件
+├── CLAUDE.md                              # 本文件
 ├── docker/
-│   └── docker-compose.yml             # Kafka + Flink + Doris + Prometheus + Grafana
-├── datagen/                           # 数据生成器
-│   └── src/
-├── flink-jobs/                        # Flink 作业代码
+│   └── docker-compose.yml                 # Kafka + Flink + Doris + Prometheus + Grafana
+├── datagen/                               # 数据生成器
 │   ├── pom.xml
-│   └── src/main/java/com/fish/
-│       ├── common/                    # 公共工具（JSON解析、ID生成等）
-│       ├── project1/                  # 金币对账相关 Job
-│       ├── project2/                  # 房间大盘相关 Job
-│       └── project3/                  # 补算 + 可观测性相关 Job
-├── doris-ddl/                         # Doris 建表语句
-│   ├── project1_coin.sql
-│   ├── project2_room.sql
-│   └── project3_backfill.sql
-├── scripts/                           # 运维脚本
-│   ├── backfill.sh                    # 补算启动脚本
-│   └── reconciliation.sh             # 对账检查脚本
-└── monitoring/                        # 监控配置
+│   └── src/main/java/com/saas/datagen/
+│       ├── PaymentEventGenerator.java     # 支付事件生成（含迟到/重复/热点模拟）
+│       ├── UserLoginGenerator.java        # 登录事件生成
+│       └── RuleChangeGenerator.java       # 规则变更事件生成
+├── flink-jobs/                            # Flink 作业代码
+│   ├── pom.xml
+│   └── src/main/java/com/saas/flink/
+│       ├── common/                        # 公共工具
+│       │   ├── JsonParser.java
+│       │   ├── IdempotencyKeyGenerator.java
+│       │   └── DorisStreamLoadSink.java
+│       ├── scene1/                        # 场景1：营收与结算
+│       │   ├── PaymentDetailETL.java
+│       │   ├── SettlementAggregation.java
+│       │   └── SettlementReconciliation.java
+│       ├── scene2/                        # 场景2：风控与告警
+│       │   ├── RiskDetection.java
+│       │   └── RiskAggregation.java
+│       └── scene3/                        # 场景3：计费与配额
+│           ├── TenantBilling.java
+│           └── QuotaEnforcement.java
+├── doris-ddl/                             # Doris 建表语句
+│   ├── scene1_settlement.sql
+│   ├── scene2_risk.sql
+│   └── scene3_billing.sql
+├── scripts/                               # 运维脚本
+│   ├── backfill.sh
+│   ├── reconciliation_check.sql
+│   └── deploy.sh
+└── monitoring/                            # 监控配置
     ├── prometheus/
+    │   ├── prometheus.yml
+    │   └── alert_rules.yml
     └── grafana/
+        └── dashboards/
 ```
 
 ## 开发顺序
 
-1. **项目1**（2-3周）→ 跑通全链路 + 一致性
-2. **项目2**（2-3周）→ 倾斜治理 + 维表Join
-3. **项目3**（2周）→ 补算 + 监控 + 降级
+1. **场景 1**（2-3周）→ 幂等去重 + 迟到回补 + 规则版本化（实时数仓硬骨头）
+2. **场景 2**（2-3周）→ 在同一条支付明细上叠加风控特征与告警输出（状态与倾斜治理）
+3. **场景 3**（2周）→ 补齐多租户治理（计费、配额、隔离、成本控制）
 
 ## 面试话术
 
-> "我做过一个捕鱼游戏的实时数据平台，日增 20 亿条。
+> "我做过一个 SAAS 游戏支付抽水平台的实时数仓，服务数百个游戏公司租户，日增十亿级事件。
 >
-> 第一个问题是金币一致性——Flink 重启会重复消费，我用 Doris Unique Key + Sequence Column 做幂等，再配合对账表做双源校验，差异率控制在万分之一以下。
+> 第一个问题是结算一致性——Kafka 至少一次投递加上 Flink 重启重放，支付回调和补单也可能重复上报。我用 Doris Unique Key + Sequence Column 做幂等写入，退款/拒付迟到数小时通过 allowed lateness 回补窗口聚合，Unique Key 覆盖写入保证不翻倍。抽成规则版本化用广播流时间线匹配，每笔订单都能追溯用了哪版规则。配合双源对账表，差异率控制在万分之一以下。
 >
-> 第二个问题是头部房间数据倾斜——最大的房间数据量是平均值的 500 倍，我用两阶段聚合加盐打散，同时用广播流做鱼种配置的实时关联。
+> 第二个问题是实时风控——多流关联（支付+登录+设备指纹），State TTL 控制内存，黑产热点流量用加盐打散。每条风险命中都带 evidence 和 rule_version，运营能按用户/设备回放 24 小时证据链。
 >
-> 第三个问题是故障恢复——有一次 Flink 异常停了 3 小时，我设计了独立补算流程，写临时表校验后合并，同时建了全链路监控，从 Kafka Lag 到 Doris 写入延迟，端到端 SLA 控制在 2 分钟以内。"
+> 第三个问题是多租户治理——实时计费+配额检测，头部租户突发流量分钟级限流，账单不重不漏可审计。Doris 冷热分层控制存储成本。"
