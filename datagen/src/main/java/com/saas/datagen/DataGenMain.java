@@ -20,9 +20,10 @@ import java.util.*;
  *   --orders=N         每天总订单数 (默认 500000)
  *   --tenants=N        租户数 (默认 100)
  *   --days=N           生成天数 (默认 1)
- *   --tps=N            目标 TPS (默认 0=不限速)
+ *   --tps=N            每个 topic 的目标 TPS (默认 10000)
  *   --seed=N           随机种子 (默认 42)
  *   --bootstrap=hosts  Kafka bootstrap servers
+ *   --producers=N      Kafka producer 线程数 (默认 4)
  *   --dry-run          不发送 Kafka，只生成真账本
  */
 public class DataGenMain {
@@ -31,7 +32,8 @@ public class DataGenMain {
     public static void main(String[] args) throws Exception {
         GenConfig config = new GenConfig();
         boolean dryRun = false;
-        int targetTps = 0;
+        int targetTps = 10000;  // 默认 1W TPS per topic
+        int numProducers = 4;
 
         // 解析命令行参数
         for (String arg : args) {
@@ -41,6 +43,7 @@ public class DataGenMain {
             else if (arg.startsWith("--tps=")) targetTps = Integer.parseInt(arg.split("=")[1]);
             else if (arg.startsWith("--seed=")) config.seed = Long.parseLong(arg.split("=")[1]);
             else if (arg.startsWith("--bootstrap=")) config.bootstrapServers = arg.split("=", 2)[1];
+            else if (arg.startsWith("--producers=")) numProducers = Integer.parseInt(arg.split("=")[1]);
             else if (arg.equals("--dry-run")) dryRun = true;
         }
 
@@ -53,7 +56,8 @@ public class DataGenMain {
         LOG.info("Seed: {}", config.seed);
         LOG.info("Kafka: {}", config.bootstrapServers);
         LOG.info("Dry run: {}", dryRun);
-        LOG.info("Target TPS: {}", targetTps > 0 ? targetTps : "unlimited");
+        LOG.info("TPS per topic: {}", targetTps);
+        LOG.info("Producer threads: {}", numProducers);
         LOG.info("==============================================");
 
         DataGenerator generator = new DataGenerator(config);
@@ -111,7 +115,7 @@ public class DataGenMain {
         // Step 7: 发送到 Kafka
         if (!dryRun) {
             LOG.info("Step 7: Sending to Kafka...");
-            KafkaSender sender = new KafkaSender(config);
+            KafkaSender sender = new KafkaSender(config, numProducers);
             try {
                 // 先发规则变更(让 Flink 先收到规则)
                 LOG.info("Sending {} rule change events...", generator.getRuleChangeEvents().size());
