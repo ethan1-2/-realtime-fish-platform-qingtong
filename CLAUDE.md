@@ -13,12 +13,67 @@
 
 | 组件 | 版本 | 用途 |
 |------|------|------|
-| Kafka | 3.x | 事件总线，至少一次投递 |
-| Flink | 1.18+ | 实时计算引擎 |
-| Apache Doris | 2.1+ | 实时 OLAP 数据仓库 |
-| Docker Compose | - | 本地开发环境 |
-| Java 11 | - | Flink Job 开发语言 |
-| Maven | - | 构建工具 |
+| Kafka | 2.6.0 (Scala 2.13) | 事件总线，至少一次投递，PLAINTEXT 无认证 |
+| Flink | 1.15.2 Standalone | 实时计算引擎 |
+| Apache Doris | 2.1.7 | 实时 OLAP 数据仓库（从 1.2.2 升级而来） |
+| Hadoop | 2.7.3 | 底层存储（HDFS） |
+| Java | 1.8.0_144 | Flink Job 开发语言 |
+| Maven | 待安装 | 构建工具 |
+
+## 集群信息
+
+### Kafka 集群 (3 Broker)
+
+| 节点 | hostname | IP | CPU | 内存 | 安装路径 |
+|------|----------|-----|-----|------|----------|
+| kafka1 (操作节点) | kafka1-84239 | 11.26.164.164 | 1核 | 2.67G | /usr/local/kafka_2.13-2.6.0/ |
+| kafka2 | kafka2-84239 | 11.99.173.36 | 1核 | 2.67G | /usr/local/kafka_2.13-2.6.0/ |
+| kafka3 | kafka3-84239 | 11.99.173.4 | 1核 | 2.67G | /usr/local/kafka_2.13-2.6.0/ |
+
+- Bootstrap Servers: `kafka1-84239:9092,kafka2-84239:9092,kafka3-84239:9092`
+- ZooKeeper: `kafka1-84239:2181,kafka2-84239:2181,kafka3-84239:2181`
+- 认证：无（PLAINTEXT）
+- 日志目录：/opt/kafka_2.13-2.6.0/kafka-logs
+
+### Flink 集群 (Standalone)
+
+| 节点 | 角色 | hostname | IP | CPU | 内存 | 安装路径 |
+|------|------|----------|-----|-----|------|----------|
+| nn1 (操作节点) | JobManager | nn1-23273 | 11.18.17.7 | 3核 | 3G | /usr/local/flink-1.15.2/ (符号链接), /opt/flink-1.15.2/ |
+| nn2 | - | nn2-23273 | 11.26.164.186 | 3核 | 3G | - |
+| s1 | TaskManager | s1-23273 | 11.237.80.37 | 2核 | 9.17G | - |
+| s2 | TaskManager | s2-23273 | 11.26.164.137 | 2核 | 9.17G | - |
+| s3 | TaskManager | s3-23273 | 11.18.17.58 | 2核 | 9.17G | - |
+
+- JobManager RPC: `nn1-23273:6123`
+- REST API / Web UI: `http://nn1-23273:8081`
+- TaskManager Slots: 3（每个 TM 1 slot）
+- TaskManager 内存: 1728m/TM
+- JobManager 内存: 1600m
+
+### Doris 集群 (3FE + 3BE)
+
+| 节点 | 角色 | hostname | IP | CPU | 内存 | 安装路径 |
+|------|------|----------|-----|-----|------|----------|
+| fe1 (Master/操作节点) | FE Master | fe1-47460 | 11.99.173.11 | 3核 | 3G | /usr/local/apache-doris-fe-2.1.7-bin-x64/ |
+| fe2 | FE Follower | fe2-47460 | 11.237.80.49 | 3核 | 3G | /usr/local/apache-doris-fe-2.1.7-bin-x64/ |
+| fe3 | FE Follower | fe3-47460 | 11.99.173.28 | 3核 | 3G | /usr/local/apache-doris-fe-2.1.7-bin-x64/ |
+| be1 | BE | be1-47460 | 11.26.164.150 | 3核 | 9.67G | /usr/local/apache-doris-be-2.1.7-bin-x64/ |
+| be2 | BE | be2-47460 | 11.99.173.51 | 3核 | 9.67G | /usr/local/apache-doris-be-2.1.7-bin-x64/ |
+| be3 | BE | be3-47460 | 11.26.164.162 | 3核 | 9.67G | /usr/local/apache-doris-be-2.1.7-bin-x64/ |
+
+- FE MySQL 协议: `11.99.173.11:9030` (用户: root, 密码: 12345678)
+- FE HTTP: `11.99.173.11:8030`
+- BE HTTP: `11.26.164.150:8040`, `11.99.173.51:8040`, `11.26.164.162:8040`
+- 元数据目录: /data/doris-meta (FE), 存储目录: /data/storage1 (BE)
+- 副本数: 3
+
+### 开发环境（本机）
+
+- 操作系统: CentOS 7 (x86_64)
+- JDK: 待安装
+- Maven: 待安装
+- 开发流程: 本机编写代码 → 本机编译打包 → 提交到 Flink 集群(nn1)运行
 
 ## 统一事件字段规范
 
@@ -67,7 +122,9 @@
 ### 要做的事
 
 #### 1.1 基础设施搭建
-- [ ] docker-compose 编排 Kafka(3节点) + Flink(JM+TM) + Doris(FE+BE)
+- [ ] 本机安装 JDK 8 + Maven（编译打包用）
+- [ ] 在 Kafka 集群创建所需 Topic（tp_pay_success, tp_refund_success, tp_chargeback, tp_settlement_adjust, tp_take_rate_rule_change）
+- [ ] 在 Doris 中创建数据库和表
 - [ ] 数据生成器：模拟多租户支付事件流，支持可调 TPS
   - 支持生成：pay_success、refund_success、chargeback、settlement_adjust
   - 支持模拟：迟到退款（event_time 比 kafka produce time 早数小时）
@@ -256,10 +313,8 @@
 
 ```
 realtime-fish-platform/
-├── CLAUDE.md                              # 本文件
-├── docker/
-│   └── docker-compose.yml                 # Kafka + Flink + Doris + Prometheus + Grafana
-├── datagen/                               # 数据生成器
+├── CLAUDE.md                              # 本文件（项目规划 + 集群信息）
+├── datagen/                               # 数据生成器（独立 jar，可在任意节点运行）
 │   ├── pom.xml
 │   └── src/main/java/com/saas/datagen/
 │       ├── PaymentEventGenerator.java     # 支付事件生成（含迟到/重复/热点模拟）
@@ -286,16 +341,28 @@ realtime-fish-platform/
 │   ├── scene1_settlement.sql
 │   ├── scene2_risk.sql
 │   └── scene3_billing.sql
-├── scripts/                               # 运维脚本
+├── scripts/                               # 运维与部署脚本
+│   ├── deploy-flink-job.sh               # 编译并提交 Flink Job 到集群
 │   ├── backfill.sh
-│   ├── reconciliation_check.sql
-│   └── deploy.sh
-└── monitoring/                            # 监控配置
+│   └── reconciliation_check.sql
+└── monitoring/                            # 监控配置（场景3使用）
     ├── prometheus/
-    │   ├── prometheus.yml
-    │   └── alert_rules.yml
     └── grafana/
-        └── dashboards/
+```
+
+## 部署流程
+
+```
+本机 (编译打包)                     nn1-23273 (Flink JobManager)
+┌──────────────┐   scp jar    ┌──────────────────────────┐
+│ mvn package  │ ───────────→ │ flink run -d xxx.jar     │
+│ 生成 fat jar │              │ 提交到 Standalone 集群     │
+└──────────────┘              └──────────────────────────┘
+                                        │
+                              ┌─────────┼─────────┐
+                              ▼         ▼         ▼
+                           s1-23273  s2-23273  s3-23273
+                           (TM)      (TM)      (TM)
 ```
 
 ## 开发顺序
