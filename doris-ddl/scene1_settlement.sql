@@ -27,14 +27,14 @@ CREATE TABLE IF NOT EXISTS dwd_payment_detail (
     user_id             VARCHAR(64)     NOT NULL    COMMENT '用户ID',
     event_type          VARCHAR(32)     NOT NULL    COMMENT '事件类型: pay_success/refund_success/chargeback/settlement_adjust',
     amount_minor        BIGINT          NOT NULL    COMMENT '金额(分), 退款/拒付为负数',
-    currency            VARCHAR(8)      DEFAULT 'CNY' COMMENT '币种',
+    currency            VARCHAR(8)                  COMMENT '币种',
     channel_id          VARCHAR(32)                 COMMENT '渠道ID',
     pay_method          VARCHAR(32)                 COMMENT '支付方式: wx/alipay/card/h5/quickpay',
     psp                 VARCHAR(32)                 COMMENT '第三方支付通道',
     region              VARCHAR(32)                 COMMENT '地区',
     take_rate_rule_version INT                      COMMENT '抽成规则版本号',
     take_rate_pct       DECIMAL(10,6)               COMMENT '抽成比例快照(如0.03=3%)',
-    take_rate_fixed_fee BIGINT          DEFAULT 0   COMMENT '固定费用(分)',
+    take_rate_fixed_fee BIGINT                      COMMENT '固定费用(分)',
     take_rate_amount    BIGINT                      COMMENT '平台抽成金额(分)',
     settlement_amount   BIGINT                      COMMENT '租户应结算金额(分)',
     ref_type            VARCHAR(32)                 COMMENT '关联类型(payment/refund/none)',
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS dwd_payment_detail (
     event_time          DATETIME(3)     NOT NULL    COMMENT '事件发生时间(业务时间)',
     ingest_time         DATETIME(3)                 COMMENT '进入Kafka的时间',
     process_time        DATETIME(3)                 COMMENT 'Flink处理时间',
-    data_quality_flag   VARCHAR(32)     DEFAULT 'normal' COMMENT '数据质量标记: normal/dirty/suspect'
+    data_quality_flag   VARCHAR(32)                  COMMENT '数据质量标记: normal/dirty/suspect'
 )
 UNIQUE KEY(event_date, idempotency_key)
 PARTITION BY RANGE(event_date) ()
