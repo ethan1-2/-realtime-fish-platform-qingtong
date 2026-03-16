@@ -12,8 +12,12 @@
     - 输出 Doris 表（至少 1 张）
     - 验收口径（SQL / 对账抽样）
     - 实现提示（Flink SQL 或 DataStream 都可）
+  - 建议统一 README 结构（强烈建议照做）：
+    - `目标 / 输入 / 输出 / 核心 Flink 点 / 验收 / 交付物`
 - `projects/_shared/`
   - 公共约定与复用说明（事件字段、topic、DDL、产数）
+- `projects/_template/`
+  - 练习项目 README 模板（新建练习先复制它）
 - `datagen/`
   - 公共产数模块（所有练习尽量复用，必要时再扩展）
 - `doris-ddl/`
@@ -28,4 +32,3 @@
 3. 如果需要新表：
    - 先尝试复用 `doris-ddl/scene1_settlement.sql` 里的表
    - 实在需要新增，再新增一个最小 DDL 文件放到 `doris-ddl/`，并在项目 README 里引用
-

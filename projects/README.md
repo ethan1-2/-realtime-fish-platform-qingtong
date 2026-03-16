@@ -11,6 +11,15 @@
 - P02: `p02_net_minute_lateness/`  
   再升级：多 topic 合流 + allowed lateness 回补净入金（至少落 1 张 Doris 表）
 
+## P03-P05：Flink 机制专项（Checkpoint/State/Shuffle）
+
+- P03: `p03_checkpoint_recovery_basics/`  
+  Checkpoint 基础与失败恢复验证（把“可恢复”练成可观测的行为）
+- P04: `p04_state_ttl_dedup/`  
+  Managed State TTL 去重，对比本地 cache，理解“缓存”和 checkpoint 的边界
+- P05: `p05_shuffle_skew_two_stage/`  
+  Shuffle 与倾斜治理：两阶段聚合 + 加盐（salt）
+
 ## 场景 1-3：大项目
 
 - 场景 1: `scene1_settlement/`  
@@ -27,4 +36,3 @@
 - 公共产数：`../datagen/`
 - Doris DDL：`../doris-ddl/scene1_settlement.sql`
 - 共享约定：`_shared/README.md`
-
