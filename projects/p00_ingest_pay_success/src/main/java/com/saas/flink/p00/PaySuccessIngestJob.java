@@ -45,7 +45,20 @@ import java.util.*;
  *
  * 【幂等策略】
  *   不在 Flink 侧维护状态去重，完全依赖 Doris 表的 UNIQUE KEY(event_date, idempotency_key)。
- *   同一条数据写入多次 → Doris merge-on-write 自动保留最新一条 → 天然幂等。
+ *   同一条数据写入多次 → Doris merge-on-write 执行 last-write-wins（最后写入覆盖）。
+ *
+ *   【适用场景限定】
+ *   这种幂等策略只适用于：
+ *   - 相同幂等键的重复写入是完全相同的 payload（或业务上允许覆盖）
+ *   - 不需要按业务时间保留"最新"（Doris 没有 sequence column 时，是按写入顺序覆盖）
+ *
+ *   【生产边界】
+ *   - P00 场景下，重复投递通常是相同 payload，last-write-wins 问题不大
+ *   - 到了退款/规则回补场景（P02+），必须引入 sequence column 或 version 字段，
+ *     否则乱序到达会导致"旧数据覆盖新数据"
+ *   - 当前方案不是端到端 exactly-once（重复数据仍会发 HTTP 到 Doris，浪费网络 IO），
+ *     P02 会加 Flink State 去重优化
+ *
  *   优点：Flink 侧无状态，重启恢复快，不占 State 内存。
  *   缺点：重复数据仍然会发 HTTP 请求到 Doris（浪费网络 IO），P02 阶段会加 State 去重优化。
  *
@@ -107,10 +120,18 @@ public class PaySuccessIngestJob {
 
         // 开启 Checkpoint，间隔 60 秒。
         // 【为什么需要 Checkpoint？】
-        //   P00 虽然没有用 Flink State，但 Checkpoint 会提交 Kafka offset，
-        //   这样 Job 重启后从上次 Checkpoint 的 offset 继续消费，而不是从头消费。
-        //   如果不开 Checkpoint，KafkaSource 不会提交 offset，重启后根据
-        //   OffsetsInitializer 的策略决定从哪里开始（我们设了 earliest → 从头重跑）。
+        //   P00 虽然没有用 Flink State，但 Checkpoint 会触发 Source 持久化消费进度。
+        //   对于 KafkaSource，消费进度保存在 Flink 的 checkpoint state 中（不是 Kafka 的 __consumer_offsets）。
+        //   Job 重启时，Flink 从最近一次成功的 checkpoint 恢复 Source state，继续从上次的 offset 消费。
+        //
+        //   【注意】当前项目的消费进度恢复依赖 Flink checkpoint，不依赖 Kafka consumer group offset。
+        //   KafkaSource 是否回写 offset 到 Kafka 取决于 connector 版本和配置（Flink 1.15 默认不回写），
+        //   所以用 kafka-consumer-groups.sh 可能查不到 group，这不代表消费进度没保存。
+        //
+        //   如果不开 Checkpoint：
+        //   - Source 无法持久化消费进度
+        //   - Job 重启后根据 OffsetsInitializer 策略决定从哪里开始（我们设了 earliest → 从头重跑）
+        //   - 会导致数据重复消费（好在 Doris Unique Key 能兜底去重）
         env.enableCheckpointing(60000);
 
         // ---------------------------------------------------------------
@@ -120,8 +141,11 @@ public class PaySuccessIngestJob {
         //   - KafkaSource 是 Flink 1.14+ 推荐的新 Source API (FLIP-27)
         //   - 支持 Source 并行度动态调整、更好的 Watermark 对齐
         //   - FlinkKafkaConsumer 在 Flink 1.17 已标记 @Deprecated
-        //   - 但注意：新 API 不自动提交 offset 到 Kafka __consumer_offsets，
-        //     所以用 kafka-consumer-groups.sh 查不到 consumer group（这是正常的）
+        //
+        //   【消费进度可见性】
+        //   本项目中，KafkaSource 的消费进度保存在 Flink checkpoint state，不回写到 Kafka __consumer_offsets。
+        //   所以用 kafka-consumer-groups.sh 查不到 consumer group 是正常的（不代表消费进度没保存）。
+        //   这个行为取决于 connector 版本和配置，不能把"Web 工具是否可见"当作唯一判断依据。
         KafkaSource<String> kafkaSource = KafkaSource.<String>builder()
             .setBootstrapServers(kafkaBootstrap)
             .setTopics(kafkaTopic)
@@ -470,8 +494,25 @@ public class PaySuccessIngestJob {
         }
 
         /**
-         * [3.3] Job 结束或 Checkpoint 时调用。
+         * [3.3] 算子生命周期结束时调用（Job 正常结束、取消、失败时）。
          * 把 buffer 中剩余的数据 flush 出去，防止数据丢失。
+         *
+         * 【重要】close() 不是 checkpoint 回调！
+         *   - close() 只在算子销毁时调用（Job 停止/取消/失败），不在 checkpoint 边界调用
+         *   - 这意味着：当前 sink buffer 不受 checkpoint 保护
+         *   - 如果 Job 在两次 checkpoint 之间崩溃，buffer 中未 flush 的数据会丢失
+         *
+         * 【生产边界】
+         *   P00 为了简化，没有实现 checkpoint 时的 buffer flush（需要实现 CheckpointListener 接口）。
+         *   生产环境如果要求严格的 at-least-once，有两种方案：
+         *   1. 实现 CheckpointListener，在 notifyCheckpointComplete() 中 flush
+         *   2. 用官方 Doris Flink Connector（它实现了两阶段提交）
+         *   3. 或者接受"最多丢失 flushIntervalSec 秒的数据"（对于秒级延迟要求的场景可接受）
+         *
+         *   当前方案的容错语义：
+         *   - Kafka offset 由 checkpoint 保护（at-least-once 消费）
+         *   - Sink buffer 不受保护（可能丢失最后一批）
+         *   - 整体是"at-least-once 消费 + 可能丢失尾部"
          */
         @Override
         public void close() throws Exception {
