@@ -72,3 +72,72 @@ GROUP BY dirty_reason
 ORDER BY cnt DESC;
 ```
 
+---
+
+## 生产边界 / 本题简化点
+
+**P00 是最小闭环练习，以下设计只适用于本题，不代表生产默认首选：**
+
+### 1. 幂等策略的局限
+
+- **当前做法**：完全依赖 Doris UNIQUE KEY 的 last-write-wins（最后写入覆盖）
+- **适用场景**：相同幂等键的重复投递是相同 payload，或业务上允许覆盖
+- **不适用场景**：
+  - 退款/拒付等需要按业务时间保留"最新"的场景（乱序到达会导致旧数据覆盖新数据）
+  - 需要严格 exactly-once 语义的场景（重复数据仍会发 HTTP 到 Doris，浪费网络 IO）
+- **生产改进方向**：
+  - P02 会加 Flink State 去重（端到端 exactly-once）
+  - 或在 Doris 表中加 sequence column（按业务时间保留最新）
+
+### 2. Sink 容错语义
+
+- **当前做法**：自定义 HTTP Stream Load Sink，buffer 不受 checkpoint 保护
+- **容错语义**：
+  - Kafka offset 由 checkpoint 保护（at-least-once 消费）
+  - Sink buffer 不受保护（Job 崩溃时可能丢失最后一批，最多 flushIntervalSec 秒的数据）
+  - 整体是"at-least-once 消费 + 可能丢失尾部"
+- **为什么这样设计**：
+  - 官方 Doris Flink Connector 在本环境 OOM（详见 OPERATION.md 踩坑 #3）
+  - P00 重点是跑通链路，不是严格容错
+- **生产改进方向**：
+  - 实现 CheckpointListener，在 notifyCheckpointComplete() 中 flush buffer
+  - 或用官方 Connector（需要更大的 TaskManager 内存）
+  - 或接受"最多丢失 10 秒数据"（对于秒级延迟要求的场景可接受）
+
+### 3. 事件时间与 Watermark
+
+- **当前做法**：`WatermarkStrategy.noWatermarks()`，不使用事件时间
+- **为什么**：P00 不做窗口聚合，不需要 Watermark
+- **生产边界**：P01 开始做分钟级窗口聚合时，会换成 `forBoundedOutOfOrderness()` 处理乱序
+
+### 4. Kafka 消费进度可见性
+
+- **当前做法**：KafkaSource 的消费进度保存在 Flink checkpoint state，不回写到 Kafka `__consumer_offsets`
+- **现象**：用 `kafka-consumer-groups.sh` 查不到 consumer group
+- **为什么**：Flink 1.15 的 KafkaSource 默认不回写 offset（这是正常的，不代表消费进度没保存）
+- **生产边界**：是否回写 offset 取决于 connector 版本和配置，不能把"Web 工具是否可见"当作唯一判断依据
+
+### 5. 数据倾斜
+
+- **当前做法**：未做倾斜治理
+- **现象**：数据生成器模拟了头部租户（T0001 占 35%），可能导致某些 subtask 负载高
+- **生产边界**：P05 会专门练习倾斜治理（加盐、动态 rebalance 等）
+
+---
+
+## 学习重点
+
+P00 的核心价值是**建立端到端链路的直觉**，而不是追求生产级完备性。
+
+重点掌握：
+- Flink 算子的生命周期（open/invoke/close）
+- 侧输出流（OutputTag）的用法
+- Doris Stream Load 协议
+- 幂等的多种实现方式（Doris Unique Key vs Flink State）
+
+后续练习会逐步补齐：
+- P01: 事件时间 + Watermark
+- P02: 多流 Join + 迟到数据处理
+- P03/P04: Checkpoint + State 的深入理解
+- P05: 数据倾斜治理
+
