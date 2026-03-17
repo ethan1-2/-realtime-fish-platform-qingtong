@@ -1,0 +1,8 @@
+{
+  "event_date": "2026-03-16",
+  "receive_time": "2026-03-16 12:35:10.456",
+  "dirty_reason": "amount_le_zero:0",
+  "event_type": "pay_success",
+  "tenant_id": "T0005",
+  "raw_payload": "{\"event_type\":\"pay_success\",\"tenant_id\":\"T0005\",\"app_id\":\"app_game_005\",\"order_id\":\"ORD20260316999999999\",\"payment_id\":\"PAY20260316999999999\",\"user_id\":\"user_99999\",\"idempotency_key\":\"idem_T0005_ORD20260316999999999\",\"amount_minor\":0,\"currency\":\"CNY\",\"channel_id\":\"ch_alipay\",\"pay_method\":\"alipay\",\"psp\":\"alipay\",\"region\":\"CN-BJ\",\"event_time\":1710576896000,\"ingest_time\":1710576897123,\"trace_id\":\"trace_dirty_001\",\"data_quality_flag\":\"suspect\"}"
+}

@@ -4,22 +4,72 @@
 
 把 Kafka 的 `tp_pay_success` 事件稳定写入 Doris 明细表，跑通端到端链路，并把解析/校验失败的数据落到脏数据表。
 
-这个练习不要求窗口聚合，不要求规则 join，不要求退款回补。只做“稳定入仓 + 幂等”。
+这个练习不要求窗口聚合，不要求规则 join，不要求退款回补。只做”稳定入仓 + 幂等”。
+
+---
+
+## 快速导航
+
+| 文件 | 说明 |
+|------|------|
+| `ddl.sql` | Doris 建表语句（p00_payment_detail + p00_dirty_event） |
+| `examples/` | 输入输出数据示例（JSON 格式 + 字段说明） |
+| `src/main/java/.../PaySuccessIngestJob.java` | Flink Job 源码（详细注释） |
+| `OPERATION.md` | 完整操作流水 + 踩坑记录 |
+
+---
+
+## 数据结构
+
+### 输入：Kafka tp_pay_success
+
+详见 `examples/input_pay_success.json`（正常数据）和 `examples/input_dirty_zero_amount.json`（脏数据）。
+
+关键字段：
+- `idempotency_key`：幂等键，格式 `idem_{tenant_id}_{order_id}`
+- `amount_minor`：金额（分），必须 > 0
+- `event_time`：业务时间（毫秒时间戳）
+- `pay_method`：支付方式，枚举 `wx/alipay/card/h5/quickpay`
+
+### 输出 1：Doris p00_payment_detail
+
+详见 `examples/output_to_doris_detail.json`。
+
+字段变化：
+- **新增** `event_date`：从 `event_time` 提取日期（Doris 分区键）
+- **新增** `process_time`：Flink 处理时间
+- **转换** `event_time`：毫秒时间戳 → `yyyy-MM-dd HH:mm:ss.SSS` 字符串
+
+表结构：
+- **UNIQUE KEY**: `(event_date, idempotency_key)` — 幂等去重
+- **分区**: 按 `event_date` 动态分区（天级）
+- **分桶**: 按 `idempotency_key` HASH 分桶（16 桶）
+
+### 输出 2：Doris p00_dirty_event
+
+详见 `examples/output_to_doris_dirty.json`。
+
+关键字段：
+- `dirty_reason`：校验失败原因（如 `amount_le_zero:0`）
+- `raw_payload`：原始 JSON（截断到 2000 字符）
+
+---
 
 ## 输入
 
 - Kafka topic: `tp_pay_success`
-- 事件字段参考：`docs/reference/desktop_codex_datagen_spec.md`
+- 事件字段参考：`examples/README.md`（含完整字段说明）
 - 产数：复用 `datagen/`（可先用小参数跑通）
 
-## 输出（至少 1 张表）
+## 输出（2 张表）
 
-复用场景 1 DDL（`doris-ddl/scene1_settlement.sql`）：
+建表语句见 `ddl.sql`：
 
-- `saas_payment.dwd_payment_detail`
+- `saas_payment.p00_payment_detail`
   - 只写入 `event_type = 'pay_success'` 的行
   - 主键：`(event_date, idempotency_key)` 用于幂等覆盖
-- `saas_payment.dwd_dirty_event`（建议做）
+- `saas_payment.p00_dirty_event`
+  - 记录校验失败的数据和原因
 
 ## Flink 要做的事
 
