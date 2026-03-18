@@ -43,6 +43,21 @@ public class DataGenerator {
     private long adjustSeq = 0;
     private int globalRuleVersion = 0;
 
+    /**
+     * 设置 ID 计数器的起始偏移量。
+     * streaming 模式下每批调用，确保全局唯一的 orderId/paymentId/idempotencyKey。
+     */
+    public void setSeqOffset(long offset) {
+        this.orderSeq = offset;
+        this.paymentSeq = offset;
+        this.refundSeq = offset;
+        this.chargebackSeq = offset;
+        this.adjustSeq = offset;
+    }
+
+    /** 返回当前 orderSeq（用于下一批的 offset） */
+    public long getOrderSeq() { return orderSeq; }
+
     public DataGenerator(GenConfig config) {
         this.config = config;
         this.random = new Random(config.seed);

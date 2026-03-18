@@ -221,6 +221,7 @@ public class DataGenMain {
 
         long totalSent = 0;
         long batchNum = 0;
+        long seqOffset = 0; // 全局 ID 偏移量，确保跨批次 orderId/paymentId 唯一
 
         LOG.info("==============================================");
         LOG.info("Streaming started! Generating {} orders every {}s", batchSize, batchIntervalSec);
@@ -233,6 +234,7 @@ public class DataGenMain {
 
             // 每一轮用一个新的 generator（清空上轮的事件列表）
             DataGenerator batchGen = new DataGenerator(config);
+            batchGen.setSeqOffset(seqOffset); // 设置 ID 起始偏移，避免 idempotency_key 重复
             batchGen.initTenants();
 
             // 用今天的 0 点做基准生成规则时间线（复用 generator 的规则）
@@ -276,10 +278,13 @@ public class DataGenMain {
                 }
             }
 
+            // 更新全局 ID 偏移量（下一批从这里开始）
+            seqOffset = batchGen.getOrderSeq();
+
             long batchDurationMs = System.currentTimeMillis() - batchStartMs;
 
-            LOG.info("Batch #{}: {} events, {}ms, total sent: {}",
-                batchNum, eventCount, batchDurationMs, totalSent);
+            LOG.info("Batch #{}: {} events, {}ms, total sent: {}, nextSeqOffset: {}",
+                batchNum, eventCount, batchDurationMs, totalSent, seqOffset);
 
             // 等到下一个 batch interval
             long sleepMs = (batchIntervalSec * 1000L) - batchDurationMs;
