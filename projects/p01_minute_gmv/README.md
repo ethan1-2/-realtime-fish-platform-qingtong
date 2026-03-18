@@ -6,35 +6,50 @@
 
 - watermark 基本用法
 - 事件时间窗口
-- Doris Unique Key 覆盖写入（同一分钟同维度可更新）
+- Doris Unique Key 覆盖写入
 
 ## 输入
 
 - Kafka topic: `tp_pay_success`
 - 公共产数：`datagen/`
 
-## 输出（至少 1 张表）
+## 输出（至少 1 张 Doris 表）
 
-复用 `doris-ddl/scene1_settlement.sql`：
+为了方便独立验证，P01 使用专用表：
 
-- `saas_payment.dws_settlement_minute`
-  - 仅填充 `pay_count/pay_amount/net_amount`（其他字段可先置 0）
+- `saas_payment.p01_settlement_minute`
+
+这个表的字段和场景 1 的 `dws_settlement_minute` 保持同一类口径，但只保留 P01 必需字段：
+
+- 维度：`stat_date/stat_minute/tenant_id/app_id/channel_id/pay_method`
+- 指标：`pay_count/pay_amount/net_amount/update_time`
+
+对应 DDL：`projects/p01_minute_gmv/ddl.sql`
 
 ## Flink 要做的事
 
 - 从 `event_time` 抽取事件时间
-- Watermark（建议先从 5s 或 10s 乱序容忍开始）
-- 1 分钟滚动窗口（Tumbling）
-- 分组维度（建议与表主键一致）
-  - `stat_date, stat_minute, tenant_id, app_id, channel_id, pay_method`
-- 指标
+- Watermark：`5s` 乱序容忍
+- 1 分钟滚动窗口（Tumbling Event Time Window）
+- 分组维度：
+  - `tenant_id/app_id/channel_id/pay_method`
+- 指标：
   - `pay_count = COUNT(*)`
   - `pay_amount = SUM(amount_minor)`
-  - `net_amount = pay_amount`（本练习只考虑 pay_success）
+  - `net_amount = pay_amount`
 
-## 可选加分（不强制）
+## 交付物
 
-- 去重：按 `idempotency_key` 在进入窗口前做一次去重（TTL 例如 3 天），避免重复投递导致 pay_count/pay_amount 翻倍。
+- `pom.xml`
+- `ddl.sql`
+- `src/main/java/com/saas/flink/p01/MinuteGmvJob.java`
+
+## 打包
+
+```bash
+cd projects/p01_minute_gmv
+mvn clean package -DskipTests
+```
 
 ## 验收（建议 SQL）
 
@@ -44,7 +59,7 @@
 USE saas_payment;
 
 SELECT stat_minute, SUM(pay_amount) AS gmv, SUM(pay_count) AS cnt
-FROM dws_settlement_minute
+FROM p01_settlement_minute
 WHERE stat_date = CURDATE()
 GROUP BY stat_minute
 ORDER BY stat_minute DESC
@@ -57,7 +72,7 @@ LIMIT 30;
 USE saas_payment;
 
 SELECT stat_minute, tenant_id, app_id, channel_id, pay_method, pay_count, pay_amount
-FROM dws_settlement_minute
+FROM p01_settlement_minute
 WHERE stat_date = CURDATE()
 ORDER BY stat_minute DESC
 LIMIT 50;
