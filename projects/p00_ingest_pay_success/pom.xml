@@ -15,6 +15,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <flink.version>1.17.2</flink.version>
         <flink.kafka.connector.version>3.0.2-1.17</flink.kafka.connector.version>
+        <doris.connector.version>1.6.2</doris.connector.version>
         <kafka.version>2.6.0</kafka.version>
         <jackson.version>2.13.5</jackson.version>
     </properties>
@@ -39,6 +40,13 @@
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
             <version>${flink.kafka.connector.version}</version>
+        </dependency>
+
+        <!-- Flink Doris Connector (1.6.2, bufferCount 改小避免 OOM) -->
+        <dependency>
+            <groupId>org.apache.doris</groupId>
+            <artifactId>flink-doris-connector-1.17</artifactId>
+            <version>${doris.connector.version}</version>
         </dependency>
 
         <!-- Jackson for JSON parsing -->
