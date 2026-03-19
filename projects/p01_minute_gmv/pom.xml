@@ -13,7 +13,9 @@
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <flink.version>1.15.2</flink.version>
+        <flink.version>1.17.2</flink.version>
+        <flink.kafka.connector.version>3.0.2-1.17</flink.kafka.connector.version>
+        <doris.connector.version>1.6.2</doris.connector.version>
         <jackson.version>2.13.5</jackson.version>
     </properties>
 
@@ -33,7 +35,12 @@
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
-            <version>${flink.version}</version>
+            <version>${flink.kafka.connector.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.doris</groupId>
+            <artifactId>flink-doris-connector-1.17</artifactId>
+            <version>${doris.connector.version}</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
