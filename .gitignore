@@ -1,10 +1,11 @@
+
+# Build outputs
 # IDEs
-.idea/
-
-# OS / editor
-.DS_Store
-Thumbs.db
-
 # Logs
+# OS / editor
+**/dependency-reduced-pom.xml
+**/target/
 *.log
-
+.DS_Store
+.idea/
+Thumbs.db
